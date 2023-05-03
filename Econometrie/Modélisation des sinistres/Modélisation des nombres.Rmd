@@ -1,0 +1,121 @@
+---
+title: "Modélisation des Sinistres IARD"
+author: "Ahmed EL YOUSEFI"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, message = FALSE, warning = FALSE)
+```
+
+#  IMPORTATION DES DONNÉES : 
+
+```{r}
+setwd("C:/Users/DELL/Desktop/IARD")
+table <- read.csv("nombresinistre16.csv",sep=";",dec=",")
+serie <- table[,2]
+head(table)
+```
+
+serie <- table[,2]
+summary(serie)
+
+
+# ANALYSE EXPLORATOIRE : 
+
+Faisons le plotage de la fonction de repartition empirique de l’echantillon :
+
+```{r}
+glue::glue_collapse(
+c(
+"MOYENNE EMPIRIQUE : " ,
+mean(serie), "\n" ,
+"VARIANCE EMPIRIQUE : " ,
+var(serie) )
+)
+```
+
+On remarque bien que la moyenne empirique est inferieur à variance empirique, ce qui permet de conclure :
+$$ \mathbb{E}(N) < \mathbb{V}(N) $$
+Cela nous encourage à utiliser le modèle binomiale négative pour modeliser la variable : X = nombre
+sinistres. On peut voir aussi l’histogramme de l’echantillon fourni dans la base des données :
+
+```{r fig.height=10}
+effectives <- table(serie)
+barplot(effectives,col="green")
+```
+
+# MODELE PARAMETRIQUE :
+
+En suite on supposera que la variable : N = nombre des sinistre suite une modèle binomiale négative, c-à-d :
+$$ N \sim (\mathcal{B}_N(n, p))_{n\in \mathbb{N} \ , \ p\ in [0,1]} $$
+
+## Estimation de parametre :
+```{r}
+library(vcd)
+model <- goodfit(serie , "nbinom")
+model$par
+```
+
+```{r}
+size <- as.integer(model$par$size)
+prob <- model$par$prob
+```
+
+L’estimateur de maximum de vraiesemblance (défini en R) montre que :
+ $$ N \sim \mathcal{B}_N(n=6, p=0.74) $$
+
+
+# EVALUATION DE MODELE :
+##  Evaluation visuelle : 
+```{r}
+plot(model)
+```
+
+Le graphique rouge represente la racine carrée de l’effective des sinistres espérée (en théorie) par le modele
+binomiale, en outre le barplot en gris represente la racine carrée de l’effective experimenté des sinistres.
+
+##  Evaluation statistique :
+Visualisons d’abord les valeurs observée vs les valeurs esperée par le modele :
+
+```{r}
+library(data.table)
+data<-data.table(model$count , model$observed , model$fitted)
+data
+```
+Regroupons d’abord les valeurs esperée par le modele qui sont < 5, ici on regroupe les classes 8 et 9.
+
+```{r}
+data[9,2:3]<-data[9,2:3]+data[10,2:3]
+data<-data[1:9,]
+data
+```
+
+Effectuant maintenant le test statistique : 
+
+```{r}
+data<-as.matrix(data[,3])
+n<-length(data)
+proba <- sapply(1:(n-1), function(n){dnbinom(n,size = size,prob = prob)})
+proba <- c(proba , 1-sum(proba))
+# The statistical test :
+stat<-chisq.test(data,proba)$statistic
+df<-n-2-1
+pvalue<-1-pchisq(stat,df)
+names(pvalue)<-c("p-value")
+pvalue
+```
+
+```{r}
+chisq.test(data,proba)
+```
+
+
+## Interpretation :
+
+On obtient un p-value $ < 5\%$, donc on, donc on rejette l’hypothese $H_0$. Ce qui signifie que le modèle binomiale
+négative n’est pas valide statistiquement.
+
+
+
+
