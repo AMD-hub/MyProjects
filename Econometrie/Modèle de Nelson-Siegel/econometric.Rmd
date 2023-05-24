@@ -69,7 +69,6 @@ NS_covid = lm(Interest ~ term1 + term2 ,datafit %>% filter(Covid=="covid"))
 NS_before_covid = lm(Interest ~ term1 + term2 , datafit %>% filter(Covid=="avant covid"))
 summary(NS_covid)
 
-stargazer(NS_before_covid)
 summary(NS_before_covid)
 ```
 
@@ -109,7 +108,6 @@ ggplot(data_BC) +
 
 pagan = lm(resid ~ Maturity,data_BC )
 
-stargazer(pagan)
 summary(pagan)
 ```
 ## Hypothesis testing : Normalité  
@@ -146,7 +144,6 @@ ggplot(data_C) +
 
 pagan = lm(resid ~ Maturity,data_C )
 
-stargazer(pagan)
 summary(pagan)
 ```
 ## Hypothesis testing : Normalité  
@@ -158,13 +155,35 @@ ggplot(data_C) +
   theme_stata()
 ```
 
+# Comparaison :
+
+```{r}
+R <- matrix(c(rep(1, 3), rep(-1, 3)), nrow = 1, ncol = 6, byrow = TRUE)
+
+               
+               
+X_covid = cbind(1,as.matrix(data_C[,c(2,3)]))
+X_avant = cbind(1,as.matrix(data_BC[,c(2,3)]))
+
+X <- rbind(cbind(X_covid, matrix(0, nrow(X_covid), ncol(X_avant))),
+           cbind(matrix(0, nrow(X_avant), ncol(X_covid)), X_avant))
+
+
+Var = R%*%solve(t(X)%*%X)%*%t(R)
+Var = solve(Var)
+x = matrix(coef(NS_covid) - coef(NS_before_covid), nrow = 6, ncol = 1, byrow = TRUE) 
+
+
+SCR = sum(NS_before_covid$residuals^2) + sum(NS_covid$residuals^2)
+
+ddl1 = 1
+ddl2 = nrow(X)-2*3
+
+
+F =   ((Var*(t(x)%*% x) )/ ddl1)/(SCR/(ddl2))
+
+```
 
 
 
-
-
-
-
-
-## Comparaison :
 
