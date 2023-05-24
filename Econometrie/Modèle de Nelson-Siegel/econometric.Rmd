@@ -1,0 +1,170 @@
+
+## LIBRARIES 
+```{r}
+library(quantmod)
+library(tidyverse)
+library(lubridate)
+library(ggthemes)
+library(car)
+library(lmtest)
+library(stargazer)
+```
+
+
+
+## IMPORTATION : 
+
+```{r message=FALSE, warning=FALSE}
+# Just somme definitions :
+start_date <- as.Date("2019-03-16")
+covidate <-  as.Date("2020-03-16")
+end_date <- as.Date("2021-03-16")
+tickers <- c("DGS3MO", "DGS6MO", "DGS1", "DGS2", "DGS3", "DGS5", "DGS7", "DGS10")
+Tickers <- c("DGS3MO" = 3/12, "DGS6MO" = 6/12, "DGS1" = 1, "DGS2" = 2, "DGS3" = 3, "DGS5" = 5, "DGS7" = 7, "DGS10" = 10)
+
+# Date Importation
+getSymbols(tickers, src="FRED", from=start_date, to=end_date, auto.assign=TRUE)
+data = cbind(DGS3MO, DGS6MO, DGS1, DGS2, DGS3, DGS5, DGS7, DGS10)
+data = data.frame(data)
+# # some cleaning :
+data = data %>%   rownames_to_column(var = "date") 
+data = data %>%  mutate(date = ymd(date))
+
+# Data Cleaning
+dataALL = tibble( date = seq(start_date, end_date, by = "day")) %>% 
+  left_join(data,by = c("date" = "date")) %>% 
+  fill(everything())  %>%
+  pivot_longer(tickers,names_to = "Maturity",values_to = "Interest") %>%
+  mutate(Maturity = Tickers[Maturity])
+
+dataALL = dataALL %>% mutate(Day = as.numeric(date- start_date))
+
+dataALL = dataALL %>% mutate(Covid = ifelse(date > covidate, "covid", "avant covid"))
+
+dataALL = dataALL %>% mutate(Interest  = Interest/100) 
+```
+
+
+## VISUALISATION : 
+
+```{r}
+
+ggplot(dataALL) +
+  aes(x = Maturity, y = Interest, colour = Day, group = Day) +
+  geom_line() +
+  scale_color_gradient() +
+  ggthemes::theme_stata() +
+  facet_wrap(vars(Covid))
+
+```
+
+
+## MODELISATION : 
+
+```{r}
+lambda = 1
+datafit = dataALL %>%  mutate(term1 =  (1-exp(-lambda*Maturity))/(lambda*Maturity),
+                   term2 =  (1-exp(-lambda*Maturity))/(lambda*Maturity)-exp(-lambda*Maturity) )
+NS_covid = lm(Interest ~ term1 + term2 ,datafit %>% filter(Covid=="covid"))
+NS_before_covid = lm(Interest ~ term1 + term2 , datafit %>% filter(Covid=="avant covid"))
+summary(NS_covid)
+
+stargazer(NS_before_covid)
+summary(NS_before_covid)
+```
+
+## DISTINCTION DES GROUPES  
+```{r}
+data_BC = tibble(  Maturity =  (datafit %>%  filter(Covid=="avant covid" &  !is.na(Interest) ))$Maturity  , term1 =  (datafit %>%  filter(Covid=="avant covid" &  !is.na(Interest) ))$term1 , term2= (datafit %>%  filter(Covid=="avant covid" &  !is.na(Interest) ))$term2 , Interest =  (datafit %>%  filter(Covid=="avant covid" &  !is.na(Interest) ))$Interest , resid = NS_before_covid$residuals, fit =  NS_before_covid$fitted.values) 
+  
+data_C = tibble( Maturity =  (datafit %>%  filter(Covid=="covid" &  !is.na(Interest) ))$Maturity  , term1 =  (datafit %>%  filter(Covid=="covid" &  !is.na(Interest) ))$term1 , term2= (datafit %>%  filter(Covid=="covid" &  !is.na(Interest) ))$term2 , Interest =  (datafit %>%  filter(Covid=="covid" &  !is.na(Interest) ))$Interest , resid = NS_covid$residuals, fit =  NS_covid$fitted.values) 
+```
+
+```{r}
+ggplot(data_C) +
+  geom_point(aes(Maturity, Interest), color = "red",size=0.5)+
+  geom_line(aes(Maturity, fit), color = "blue",size = 1.5) +
+    ggthemes::theme_stata()
+```
+
+# Hypothesis testing : Avant Covid
+
+## auto correlation 
+
+```{r}
+## Pour period avant covid 
+x = durbinWatsonTest(NS_before_covid)
+x
+```
+
+## Hypothesis testing : Homoscedast 
+
+```{r}
+
+ggplot(data_BC) +
+  aes(x = Maturity, y = resid) +
+  geom_jitter(size = 1.5) +
+  ggthemes::theme_stata()
+
+
+pagan = lm(resid ~ Maturity,data_BC )
+
+stargazer(pagan)
+summary(pagan)
+```
+## Hypothesis testing : Normalité  
+
+```{r}
+ggplot(data_BC) +
+  aes(x = resid) +
+  geom_density(adjust = 1L, fill = "#6AA2DE") +
+  theme_stata()
+```
+
+
+
+
+# Hypothesis testing : Covid
+
+## auto correlation 
+
+```{r}
+## Pour period avant covid 
+x = durbinWatsonTest(NS_covid)
+x
+```
+
+## Hypothesis testing : Homoscedast 
+
+```{r}
+
+ggplot(data_C) +
+  aes(x = Maturity, y = resid) +
+  geom_jitter(size = 1.5) +
+  ggthemes::theme_stata()
+
+
+pagan = lm(resid ~ Maturity,data_C )
+
+stargazer(pagan)
+summary(pagan)
+```
+## Hypothesis testing : Normalité  
+
+```{r}
+ggplot(data_C) +
+  aes(x = resid) +
+  geom_density(adjust = 1L, fill = "#6AA2DE") +
+  theme_stata()
+```
+
+
+
+
+
+
+
+
+
+## Comparaison :
+
