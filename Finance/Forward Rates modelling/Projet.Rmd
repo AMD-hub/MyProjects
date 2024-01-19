@@ -1,0 +1,657 @@
+---
+output: 
+  pdf_document: 
+    keep_tex: yes
+---
+
+
+# Importing libraries : 
+```{r}
+library(tidyverse)
+library(lubridate)
+library(ggthemes)
+library(YieldCurve)
+```
+
+# Data preparing :
+
+## Importing Morocco rates data (daily) : 
+
+```{r}
+data <- read_delim("Moroccan rates.csv", 
+    delim = ";", escape_double = FALSE, col_types = cols(Date = col_date(format = "%d/%m/%Y")), 
+    trim_ws = TRUE)
+```
+
+```{r}
+data_maroc = data %>% pivot_longer(cols=c(-Date),names_to = "x",values_to = "Y") %>% 
+  mutate(x = as.numeric(x),Y = as.numeric(Y)/100)
+```
+
+
+## Lissing data :
+
+In order to have same $x_k-x_{k-1}$ for all $k$ :  
+
+```{r}
+delta <- 3/12
+newx <- seq(0, 30, by = delta)
+newx[1] <- 	1/360
+
+predictNS <- function(params, tau) {
+  beta0 <- params[1]
+  beta1 <- params[2]
+  beta2 <- params[3]
+  lambda <- params[4]
+  
+  term1 <- beta0
+  term2 <- beta1 * (1 - exp(-lambda * tau)) / (lambda * tau)
+  term3 <- beta2 * ((1 - exp(-lambda * tau)) / (lambda * tau) - exp(-lambda * tau))
+  
+  yield <- term1 + term2 + term3
+  return(yield)
+}
+
+NS <- function(x, r) {
+  params <- Nelson.Siegel(rate = r, maturity = x)
+  rate <- predictNS(params, newx)
+  return(rate)
+}
+
+mydata <- data_maroc %>%
+  group_by(Date) %>%
+  reframe(maturity = newx, Yliss = NS(x,Y))
+
+write.csv(mydata, "dataliss.csv", row.names = FALSE)
+```
+
+## Import lissed data : 
+
+```{r}
+data <- read_csv("dataliss.csv")
+colnames(data) = c("t","x","Y")
+```
+
+
+## Data we're using is Morocco weekly rates 2016~2018 after lissage using NS : 
+
+```{r}
+t0 = as.Date("2016-01-01")
+rates = data %>% 
+ # filter(t>=t0)  %>%
+  mutate(t = as.numeric(difftime(t, t0, units = "days"))/365  ) %>%
+  filter(Y>0.001)
+```
+
+```{r}
+maturities = (rates %>% select(x) %>% distinct())$x
+x0 = 1/360
+rshort = (rates %>% filter(abs(x-x0)<x0/2) )$Y
+```
+
+
+## Adding P(t,T) : 
+
+```{r}
+rates = rates %>% 
+  mutate( P  = exp(-x*Y) )
+```
+
+
+## Ading rt : 
+
+```{r}
+rates = rates %>% 
+  mutate( r = rep(rshort, each = length(maturities) ) )
+```
+
+## Ading f(t,T) : 
+
+```{r}
+rates = rates %>% 
+  mutate( f = ifelse(abs(x-x0)<x0,r,-(log(P) - lag(log(P)))/(x-lag(x)) ) ) 
+```
+
+
+# EDA and risk premuim : 
+
+## Visualising $Y(t,T)$  : 
+
+```{r}
+ggplot(rates) +
+  aes(x = t, y = Y, colour = x, group = x) +
+  geom_line() +
+  scale_color_gradient() +
+  theme_bw()
+```
+
+```{r}
+ggplot(rates) +
+  aes(x = x, y = Y, colour = t, group = t) +
+  geom_line() +
+  scale_color_gradient() +
+  theme_bw()
+```
+
+## Visualising Forward rates $f(t,T)$ : 
+
+```{r}
+ggplot(rates) +
+  aes(x = t, y = f, colour = x, group = x) +
+  geom_line() +
+  scale_color_gradient() +
+  theme_bw()
+```
+
+```{r}
+ggplot(rates) +
+  aes(x = x, y = f, colour = t, group = t) +
+  geom_line() +
+  scale_color_gradient() +
+  theme_bw()
+```
+
+## Visualising Short rate $r_t$ :
+
+```{r}
+ggplot(rates) +
+  aes(x = t, y = r) +
+  geom_line(colour = "#112446") +
+  theme_bw()
+```
+## Visualising ZCB prices $\ln P(t,T)$: 
+
+```{r}
+ggplot(rates) +
+  aes(x = t, y = log(P), colour = x, group = x) +
+  geom_line() +
+  scale_color_gradient() +
+  theme_bw()
+```
+
+## Risk Premuim :  
+
+```{r}
+dt = 1/360
+BSparams = rates %>% select(t,x,P) %>% group_by(x) %>% 
+  reframe( volatility = sqrt( (1/dt)* var( log(P/lag(P)) ,na.rm = TRUE)), return = mean(log(P/lag(P)),na.rm = TRUE)/dt + volatility^2/2 )
+```
+
+```{r}
+sigma = sqrt(mean(BSparams$volatility^2))
+mu = mean(BSparams$return)
+
+qt = (mu - rates$r )/sigma
+  
+rates = rates %>% 
+  mutate(q = qt)
+```
+
+```{r}
+ggplot(rates) +
+  aes(x = t, y = q) +
+  geom_line(colour = "#112446") +
+  theme_bw()
+```
+
+
+## Data we're gonna use : 
+```{r}
+rates
+```
+
+
+# Benchmark Models 
+
+## Nilson Siegle 
+
+Calibration : 
+```{r}
+NSParameters = Nelson.Siegel( rates$f, rates$x)
+
+NSrates <- function(coef, t){
+  beta0 = coef[,1]
+  beta1 = coef[,2]
+  beta2 = coef[,3]
+  tau = coef[,4]
+  return(beta0 + beta1 * (1 - exp(-t/tau))/(t/tau) + beta2 * ((1 - exp(-t/tau))/(t/tau) - exp(-t/tau))) 
+}
+```
+
+Calcul des estimations : 
+```{r}
+curveNS  = tibble( maturity = maturities, rates = NSrates(NSParameters,maturities))
+```
+
+Visualisation de courbe : 
+```{r}
+ggplot(curveNS) +
+  aes(x = maturity, y = rates) +
+  geom_line(colour = "#112446") +
+  theme_bw()
+```
+
+
+## Svensson  
+
+Calibration : 
+```{r}
+SParameters = Svensson( rates$f, rates$x)
+
+Srates <- function(coef, t){
+  beta0 = coef[,1]
+  beta1 = coef[,2]
+  beta2 = coef[,3]
+  beta3 = coef[,4]
+  tau1 = coef[,5]
+  tau2 = coef[,6]
+  term1 <- beta0
+  term2 <- beta1 * (1 - exp(-t/tau1)) / (t/tau1)
+  term3 <- beta2 * ((1 - exp(-t/tau1))/(t/tau1) - exp(-t/tau1))
+  term4 <- beta3 * ((1 - exp(-t/tau2))/(t/tau2) - exp(-t/tau2))
+  
+  return(term1 + term2 + term3 + term4)
+}
+```
+
+Calcul des estimations : 
+```{r}
+curveS  = tibble( maturity = maturities, rates = Srates(SParameters,maturities))
+```
+
+Visualisation de courbe : 
+```{r}
+ggplot(curveS) +
+  aes(x = maturity, y = rates) +
+  geom_line(colour = "#112446") +
+  theme_bw()
+```
+
+
+## Comparaison des models benchmark : 
+
+```{r}
+ggplot(rates) +
+  aes(x = x, y = f, colour = t, group = t) +
+  geom_line() +
+  geom_line(  aes(x = x, y =  NSrates(NSParameters,x) ),linewidth = 1.2, colour = "orange" )+
+  geom_point(  aes(x = x, y =  NSrates(NSParameters,x) ),size = 1.6, colour = "orange" )+
+  geom_line(  aes(x = x, y =  Srates(SParameters,x) ),linewidth = 1.2, colour = "green" )+
+  geom_point(  aes(x = x, y =  Srates(SParameters,x) ),size = 1.6, colour = "green" )+
+  theme_bw()
+```
+
+# Proposed Model (Three Factors Model TF) :
+
+```{r}
+# Defining initial Values :
+delta = 0.25
+N = length(maturities)
+time = rates$t
+f0 = (rates %>% filter(t==0) )$f
+
+dt  = 1/360
+timesDaily  = unique(rates$t)
+dtW = 1/52
+timeWeekly  = numeric(length(timesDaily)*dt/dtW)
+for(i in 0:length(timeWeekly)){
+  timeWeekly[i+1] = timesDaily[1+i*floor(dtW/dt)]
+}
+
+
+rates = rates %>% filter( t %in% timeWeekly )
+```
+
+```{r}
+# Function for predictions : 
+Fonc <- function(t,dt,r,q,params){
+  N = length(r)
+  lambda0 = params[1]
+  lambda1 = params[2]
+  lambda2 = params[3]
+  kappa0  = params[4]
+  kappa1  = params[5]
+  kappa2  = params[6]
+  
+  sigma0  <- function(t, s, x) {
+    return(lambda0 * exp(-kappa0 * (t  +x- s)))
+  }
+  mu0     <- function(t, s, x) {
+    term1 <- exp(-kappa0 * (t  +x-s))
+    term2 <- exp(kappa0 * s) - exp(-kappa0 * (t  +x- 2 * s))
+    return(lambda0^2 * term1 * (term2 / kappa0))
+  }
+  sigma1  <- function(t, s, x) {
+    return(lambda1 * exp(-kappa1 * (t + x-s)))
+  }
+  mu1     <- function(t, s, x) {
+    term1 <- exp(-kappa1 * (t  +x- s))
+    term2 <- exp(kappa1 * s) - exp(-kappa1 * (t +x- 2 * s))
+    return(lambda1^2 * term1 * (term2 / kappa1))
+  }
+  sigma2  <- function(t, s, x) {
+    return(lambda2 * exp(-kappa2 * (t +x- s)))
+  }
+  mu2     <- function(t, s, x) {
+    term1 <- exp(-kappa2 * (t  +x- s))
+    term2 <- exp(kappa2 * s) - exp(-kappa2 * (t  +x- 2 * s))
+    return(lambda2^2 * term1 * (term2 / kappa2))
+  }
+  f         <- function(t, l, c, r, dW) {
+    term1 <- c + ((r - l) / (2 * delta) + mu0(t,t,c) * c^2 + mu1(t,t,c) * ((r - l) / (2 * delta))^2 + mu2(t,t,c) * ((r - 2 * c + l) / delta^2)^2) * dt
+    term2 <- sigma0(t,t,c) * c * dW[1] + sigma1(t,t,c) * ((r - l) / (2 * delta)) * dW[2] + sigma2(t,t,c) * ((r - 2 * c + l) / delta^2) * dW[3]
+    result <- term1 + term2
+    return(result)
+  }
+  
+
+  rnext = r 
+  dW = c(0,0,0) + rep(q*dt,3)/3
+  for( k in 2:(N-1) ){
+    rnext[k] = f(t, r[k-1], r[k], r[k+1], dW)
+  }
+  rnext[1] = f(t, r[1] , r[1], r[1+1], dW)
+  rnext[N] = f(t, r[N-1] , r[N], r[N] , dW)
+  
+  return(rnext)
+}
+
+
+FoncAlea <- function(t,dt,r,q,params){
+  N = length(r)
+  lambda0 = params[1]
+  lambda1 = params[2]
+  lambda2 = params[3]
+  kappa0  = params[4]
+  kappa1  = params[5]
+  kappa2  = params[6]
+  
+  sigma0  <- function(t, s, x) {
+    return(lambda0 * exp(-kappa0 * (t  +x- s)))
+  }
+  mu0     <- function(t, s, x) {
+    term1 <- exp(-kappa0 * (t  +x-s))
+    term2 <- exp(kappa0 * s) - exp(-kappa0 * (t  +x- 2 * s))
+    return(lambda0^2 * term1 * (term2 / kappa0))
+  }
+  sigma1  <- function(t, s, x) {
+    return(lambda1 * exp(-kappa1 * (t + x-s)))
+  }
+  mu1     <- function(t, s, x) {
+    term1 <- exp(-kappa1 * (t  +x- s))
+    term2 <- exp(kappa1 * s) - exp(-kappa1 * (t +x- 2 * s))
+    return(lambda1^2 * term1 * (term2 / kappa1))
+  }
+  sigma2  <- function(t, s, x) {
+    return(lambda2 * exp(-kappa2 * (t +x- s)))
+  }
+  mu2     <- function(t, s, x) {
+    term1 <- exp(-kappa2 * (t  +x- s))
+    term2 <- exp(kappa2 * s) - exp(-kappa2 * (t  +x- 2 * s))
+    return(lambda2^2 * term1 * (term2 / kappa2))
+  }
+  f         <- function(t, l, c, r, dW) {
+    term1 <- c + ((r - l) / (2 * delta) + mu0(t,t,c) * c^2 + mu1(t,t,c) * ((r - l) / (2 * delta))^2 + mu2(t,t,c) * ((r - 2 * c + l) / delta^2)^2) * dt
+    term2 <- sigma0(t,t,c) * c * dW[1] + sigma1(t,t,c) * ((r - l) / (2 * delta)) * dW[2] + sigma2(t,t,c) * ((r - 2 * c + l) / delta^2) * dW[3]
+    result <- term1 + term2
+    return(result)
+  }
+  
+
+  rnext = r 
+  dW = rnorm(3,mean = 0,sd = sqrt(dt)) + rep(q*dt,3)/3
+  for( k in 2:(N-1) ){
+    rnext[k] = f(t, r[k-1], r[k], r[k+1], dW)
+  }
+  rnext[1] = f(t, r[1] , r[1], r[1+1], dW)
+  rnext[N] = f(t, r[N-1] , r[N], r[N] , dW)
+  
+  return(rnext)
+}
+```
+
+
+
+```{r}
+time = unique(rates$t) 
+maxt = max(time)
+
+
+# Defining the norm of vector : 
+norm2 <- function(x){
+  sum(x^2)
+}
+
+suivant <- function(tt,time){
+  inext = 1
+  while( time[inext]<tt ){
+    inext=inext+1
+  }
+  return(time[inext+1])
+}
+
+
+# Define the mean squared error function
+mse <- function(params) {
+  mse_value = 0
+  tt = time[1]
+  i = 0 
+  while(tt<maxt){
+    r =  as.vector(rates %>% filter(t==tt) %>% select(f))$f
+    q =  as.vector(rates %>% filter(t==tt) %>% select(q))$q[1]
+    dt = suivant(tt,time)-tt
+    prediction <- Fonc(tt,dt,r,q,params)
+    tt = tt+dt
+    r =  as.vector(rates %>% filter(t==tt) %>% select(f))$f
+    mse_value <- mse_value + norm2( (r-prediction)/r ) 
+  }
+  return(mse_value/length(time))
+}
+```
+
+
+```{r}
+## Initial params :
+params = c(
+    lambda0 = 0.04157374,
+    lambda1 = 0.01830442,
+    lambda2 = 0.0926567,
+    kappa0  = 0.09287434,
+    kappa1  = 0.01661409,
+    kappa2  = 0.0436558
+          )
+
+paramsoptim = c(
+    lambda0 = 0.008742619 ,
+    lambda1 = 12.13609 ,
+    lambda2 = 0.02129127 ,
+    kappa0  = 5.564819 ,
+    kappa1  = 16.173 ,
+    kappa2  = 6.821594
+)
+```
+
+
+```{r}
+# Record timing :
+start_time <- Sys.time()
+
+# Define the optimization algorithm
+resultat <- optim(par = paramsoptim , fn = mse)
+
+params = resultat$par
+
+paste0("mse = ", round(sqrt(resultat$value)*100,2),"%")
+
+cat(
+  " Parametres estimed : \n
+    lambda0 =",paramsoptim[1], ",
+    lambda1 =",paramsoptim[2], ",
+    lambda2 =",paramsoptim[3], ",
+    kappa0  =",paramsoptim[4], ",
+    kappa1  =",paramsoptim[5], ",
+    kappa2  =",paramsoptim[6]
+)
+
+# Record end time
+end_time <- Sys.time()
+
+# Calculate elapsed time
+elapsed_time <- end_time - start_time
+
+# Print the result
+cat("\n Time for running algorithm:", as.numeric(elapsed_time), "seconds\n")
+```
+
+## Backtesting for $h = 1$ 
+
+```{r}
+tt = time[23]
+tt = time[1]
+tt
+r = as.vector(rates %>% filter(t==tt) %>% select(f))$f
+N = length(r)
+q =  as.vector(rates %>% filter(t==tt) %>% select(q))$q[1]
+ttsuivante =  suivant(tt,time)
+dt= ttsuivante-tt
+
+freal =  as.vector(rates %>% filter(t==ttsuivante) %>% select(f))$f
+
+freallag =  as.vector(rates %>% filter(t==tt) %>% select(f))$f
+
+tt = tt+dt
+festim =  Fonc(tt,dt,r = r,q=q, params = paramsoptim)
+```
+
+```{r}
+CurveQ = tibble(
+  x = maturities ,
+  freal = freal, 
+  freallag = freallag,
+  festim = festim,
+  
+  festimNS = curveNS$rates,
+  festimS = curveS$rates
+  )
+```
+
+
+```{r}
+CurveQ %>% 
+  pivot_longer(cols = c(freal,festim,freallag,festimNS,festimS),names_to = "Method", values_to = "f(t,T)") %>% 
+  ggplot() +
+    aes(x = x, y = `f(t,T)`, colour = Method, group = Method) +
+    geom_line() +
+    scale_color_hue(direction = 1) +
+    theme_bw()
+```
+
+```{r}
+## Erreurs d'estimations : 
+cat(
+  "\n",
+  "Erreur NS  =", 1000*norm2(freal - CurveQ$festimNS), "%\n",
+  "Erreur Sv  =", 1000*norm2(freal - CurveQ$festimS) , "%\n",
+  "Erreur lag =", 1000*norm2(freal - CurveQ$freallag) , "%\n",
+  "Erreur TF  =", 1000*norm2(freal - CurveQ$festim)  , "%\n"
+)
+```
+
+
+## Backtesting for $h>1$ : 
+
+```{r}
+tt = time[1]
+tt
+h = 8
+r = as.vector(rates %>% filter(t==tt) %>% select(f))$f
+N = length(r)
+q =  as.vector(rates %>% filter(t==tt) %>% select(q))$q[1]
+
+freallag =  as.vector(rates %>% filter(t==tt) %>% select(f))$f
+
+for(i in 1:h){ 
+  dt = suivant(tt,time) - tt 
+  q =  as.vector(rates %>% filter(t==tt) %>% select(q))$q[1]
+  festim =  Fonc(tt,dt,r = r,q=q, params = paramsoptim)
+  tt = tt+dt
+  r = festim
+}
+
+freal =  as.vector(rates %>% filter(t==tt) %>% select(f))$f
+```
+
+```{r}
+CurveQ = tibble(
+  x = maturities ,
+  freal = freal, 
+  freallag = freallag,
+  
+  festim = festim,
+  
+  festimNS = curveNS$rates,
+  festimS = curveS$rates
+  )
+```
+
+
+```{r}
+CurveQ %>% 
+  pivot_longer(cols = c(freal,festim,freallag,festimNS,festimS),names_to = "Method", values_to = "f(t,T)") %>% 
+  ggplot() +
+    aes(x = x, y = `f(t,T)`, colour = Method, group = Method) +
+    geom_line() +
+    scale_color_hue(direction = 1) +
+    theme_bw()
+```
+
+
+```{r}
+## Erreurs d'estimations : 
+cat(
+  "\n",
+  "Erreur NS  =", 1000*norm2(freal - CurveQ$festimNS), "%\n",
+  "Erreur Sv  =", 1000*norm2(freal - CurveQ$festimS) , "%\n",
+  "Erreur lag =", 1000*norm2(freal-  CurveQ$freallag) , "%\n",
+  "Erreur TF  =", 1000*norm2(freal - CurveQ$festim)  , "%\n"
+)
+``` 
+
+
+
+
+## Simulation of Forward rates : 
+
+```{r}
+Sim = tibble(
+  t = c(), x = c(), f = c()
+)
+
+tt = 0 
+for(i in 1:30){
+  r = as.vector(rates %>% filter(t==tt) %>% select(f))$f
+  N = length(r)
+  q =  as.vector(rates %>% filter(t==tt) %>% select(q))$q[1]
+  ttsuivante =  suivant(tt,time)
+  dt= ttsuivante-tt
+  festim =  FoncAlea(tt,dt,r = r,q=q, params = paramsoptim)
+  
+  Sim = Sim %>% bind_rows(
+    tibble(
+    t = rep(tt,N), x = maturities, f = festim
+        )
+  )
+  tt = tt+dt
+}
+```
+
+
+
+```{r}
+ggplot(Sim) +
+  aes(x = t, y = f, colour = x, group = x) +
+  geom_line() +
+  scale_color_gradient() +
+  theme_bw()
+```
+
